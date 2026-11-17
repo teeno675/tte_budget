@@ -10,6 +10,8 @@ import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
+import type { User } from "@supabase/supabase-js";
+import { useAuth } from "./hooks/useAuth";
 import { useLedger } from "./hooks/useLedger";
 import {
   EXPENSE_CATEGORIES, INCOME_CATEGORIES, type Budget, type Goal, type Invoice, type LedgerData,
@@ -19,6 +21,8 @@ import { currency, dateString, isCurrentMonth, monthLabel, shortDate, todayStrin
 import { createDefaultData } from "./data/defaultData";
 import { isLedgerData } from "./utils/storage";
 import { BudgetLine, ChartTooltip, EmptyState, MetricCard, ProgressBar, SectionTitle, TransactionList } from "./components/Primitives";
+import AuthScreen, { type AuthView } from "./components/AuthScreen";
+import { supabase } from "./lib/supabase";
 
 type ModalState =
   | { kind: "transaction"; id?: string; type?: TransactionType }
@@ -56,8 +60,41 @@ function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+function displayName(user: User) {
+  const name = user.user_metadata.full_name;
+  return typeof name === "string" ? name.trim() : "";
+}
+
 function App() {
-  const { data, setData, storageError } = useLedger();
+  const { session, loading: authLoading, recovery, configured } = useAuth();
+  const [authView, setAuthView] = useState<AuthView>("login");
+
+  if (!configured) return <AuthScreen initialView="setup" />;
+  if (authLoading) return <LoadingScreen label="Securing your studio" />;
+  if (recovery) return <AuthScreen initialView="reset" onViewChange={setAuthView} />;
+  if (!session) return <AuthScreen initialView={authView} onViewChange={setAuthView} />;
+
+  return <AuthenticatedApp key={session.user.id} user={session.user} onSignOut={async () => {
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.error("Unable to sign out.", error);
+      throw new Error("You couldn’t be signed out. Please check your connection and try again.");
+    }
+  }} />;
+}
+
+function LoadingScreen({ label }: { label: string }) {
+  return <main className="auth-loading"><span className="auth-spinner" /><p>{label}…</p></main>;
+}
+
+function LedgerErrorScreen({ message, onRetry, onSignOut }: { message: string; onRetry: () => void; onSignOut: () => Promise<void> }) {
+  const [signOutError, setSignOutError] = useState("");
+  return <main className="auth-loading"><span className="auth-error-icon"><AlertCircle size={22} /></span><h1>Your ledger needs a moment.</h1><p>{message}</p>{signOutError && <p role="alert">{signOutError}</p>}<div className="ledger-error-actions"><button className="button button-gold" onClick={onRetry}>Try again</button><button className="button button-outline" onClick={() => void onSignOut().catch((error: unknown) => setSignOutError(error instanceof Error ? error.message : "Unable to sign out. Please try again."))}>Sign out</button></div></main>;
+}
+
+function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Promise<void> }) {
+  const { data, setData, loading: ledgerLoading, error: ledgerError, saveError, retry, flush } = useLedger(user.id);
   const [page, setPage] = useState<Page>("dashboard");
   const [modal, setModal] = useState<ModalState>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -65,10 +102,6 @@ function App() {
   const [monthOffset, setMonthOffset] = useState(0);
   const [transactionFilter, setTransactionFilter] = useState({ query: "", type: "all", category: "all", from: "", to: "" });
   const importRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (storageError) setToast("Changes couldn’t be saved to this browser.");
-  }, [storageError]);
 
   const selectedMonth = useMemo(() => new Date(new Date().getFullYear(), new Date().getMonth() + monthOffset, 1), [monthOffset]);
   const selectedMonthTransactions = useMemo(() => data.transactions.filter((item) => {
@@ -226,7 +259,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `lensledger-backup-${todayString()}.json`;
+    anchor.download = `tiny-ledger-backup-${todayString()}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
     notify("Your backup is ready.");
@@ -236,7 +269,7 @@ function App() {
     if (!file) return;
     try {
       const parsed: unknown = JSON.parse(await file.text());
-      if (!isLedgerData(parsed)) throw new Error("This file doesn’t look like a LensLedger backup.");
+      if (!isLedgerData(parsed)) throw new Error("This file doesn’t look like a Tiny Ledger backup.");
       if (!window.confirm("Import this backup? It will replace the data currently saved on this device.")) return;
       setData(parsed);
       notify("Backup imported successfully.");
@@ -248,7 +281,7 @@ function App() {
   }
 
   function resetData() {
-    if (!window.confirm("Reset all LensLedger data on this device? This can’t be undone. Export a backup first if you’d like to keep a copy.")) return;
+    if (!window.confirm("Reset all Tiny Ledger data on this device? This can’t be undone. Export a backup first if you’d like to keep a copy.")) return;
     setData(createDefaultData());
     notify("Sample data restored.");
   }
@@ -258,10 +291,23 @@ function App() {
     setMobileMenuOpen(false);
   }
 
+  async function signOutSafely() {
+    try {
+      await flush();
+    } catch {
+      const confirmed = window.confirm("Your latest changes could not be saved. Sign out anyway? Any unsaved changes in this session may be lost.");
+      if (!confirmed) return;
+    }
+    await onSignOut();
+  }
+
+  if (ledgerLoading) return <LoadingScreen label="Opening your private ledger" />;
+  if (ledgerError) return <LedgerErrorScreen message={ledgerError} onRetry={retry} onSignOut={signOutSafely} />;
+
   return (
     <div className={`app-shell theme-${data.theme}`}>
       <aside className={`sidebar ${mobileMenuOpen ? "sidebar-open" : ""}`}>
-        <button className="brand" onClick={() => navigate("dashboard")} aria-label="LensLedger home">
+        <button className="brand" onClick={() => navigate("dashboard")} aria-label="Tiny Ledger home">
           <span className="brand-mark"><Aperture size={20} strokeWidth={1.7} /></span>
           <span className="brand-name">lens<span>ledger</span></span>
         </button>
@@ -284,8 +330,8 @@ function App() {
             <Settings size={18} strokeWidth={1.8} /><span>Settings</span>
           </button>
           <div className="profile-row">
-            <div className="avatar">A</div>
-            <div><strong>Alex Morgan</strong><span>Independent photographer</span></div>
+          <div className="avatar">{displayName(user).charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || "A"}</div>
+          <div><strong>{displayName(user) || user.email}</strong><span>Independent photographer</span></div>
             <MoreHorizontal size={17} className="muted-icon" />
           </div>
         </div>
@@ -302,11 +348,12 @@ function App() {
             <button className="theme-toggle" onClick={toggleTheme} aria-label={`Switch to ${data.theme === "dark" ? "light" : "dark"} mode`} title={`Switch to ${data.theme === "dark" ? "light" : "dark"} mode`}>
               {data.theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <button className="top-avatar" aria-label="Alex Morgan profile">A</button>
+            <button className="top-avatar" aria-label="Open account settings" onClick={() => navigate("settings")}>{displayName(user).charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || "A"}</button>
           </div>
         </header>
 
         <div className="page-content">
+          {saveError && <div className="ledger-save-warning" role="alert"><AlertCircle size={17} /><span>{saveError} Your changes are still open in this session.</span><button className="button button-outline button-small" onClick={retry}>Retry save</button></div>}
           <div className="page-heading">
             <div>
               <div className="eyebrow">{showsMonthSelector ? monthLabel(selectedMonth).toUpperCase() : "YOUR STUDIO"} <span className="eyebrow-dot">·</span> {showsMonthSelector ? "YOUR STUDIO" : "PERSONAL FINANCE"}</div>
@@ -344,10 +391,10 @@ function App() {
                 updateData((current) => ({ ...current, invoices: current.invoices.filter((item) => item.id !== invoice.id) }));
                 notify("Invoice deleted.");
               }} />}
-              {page === "settings" && <SettingsPage data={data} onExport={exportData} onImport={() => importRef.current?.click()} onReset={resetData} onTheme={toggleTheme} />}
+              {page === "settings" && <SettingsPage data={data} user={user} onExport={exportData} onImport={() => importRef.current?.click()} onReset={resetData} onTheme={toggleTheme} onSignOut={signOutSafely} />}
             </motion.div>
           </AnimatePresence>
-          <footer className="page-footer"><span>Made for the ones behind the lens.</span><span>LensLedger <span className="footer-dot">·</span> Your studio, in balance.</span></footer>
+          <footer className="page-footer"><span>Made for the ones behind the lens.</span><span>Tiny Ledger <span className="footer-dot">·</span> Your studio, in balance.</span></footer>
         </div>
       </main>
 
@@ -357,7 +404,7 @@ function App() {
           modal={modal} data={data} onClose={() => setModal(null)} onSaveTransaction={saveTransaction}
           onSaveGoal={saveGoal} onSaveBudget={saveBudget} onSaveInvoice={saveInvoice} onAllocate={allocateToGoal}
         />}
-        {toast && <motion.div className={`toast ${storageError ? "toast-error" : ""}`} initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }}>{storageError ? <AlertCircle size={16} /> : <Check size={16} />}{toast}</motion.div>}
+        {toast && <motion.div className="toast" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }}><Check size={16} />{toast}</motion.div>}
       </AnimatePresence>
     </div>
   );
@@ -691,21 +738,111 @@ function InvoicesPage({ data, onAdd, onEdit, onMarkPaid, onDelete }: {
   </div>;
 }
 
-function SettingsPage({ data, onExport, onImport, onReset, onTheme }: {
-  data: LedgerData; onExport: () => void; onImport: () => void; onReset: () => void; onTheme: () => void;
+function SettingsPage({ data, user, onExport, onImport, onReset, onTheme, onSignOut }: {
+  data: LedgerData; user: User; onExport: () => void; onImport: () => void; onReset: () => void; onTheme: () => void;
+  onSignOut: () => Promise<void>;
 }) {
   return <div className="settings-layout">
+    <ProfileSettings user={user} onSignOut={onSignOut} />
     <section className="panel settings-panel"><SectionTitle title="The way it looks" detail="A workspace that feels like yours." />
       <div className="setting-row"><div className="setting-icon"><Sun size={18} /></div><div className="setting-copy"><strong>Appearance</strong><span>Choose a little more light or a little more shade.</span></div><button className={`theme-switch ${data.theme === "light" ? "switch-light" : ""}`} onClick={onTheme} role="switch" aria-checked={data.theme === "light"} aria-label="Toggle light mode"><span>{data.theme === "dark" ? <Moon size={13} /> : <Sun size={13} />}</span></button><span className="theme-state">{data.theme === "dark" ? "Dark" : "Light"}</span></div>
     </section>
     <section className="panel settings-panel"><SectionTitle title="Your data, always yours." detail="Everything stays on this device unless you choose to take it with you." />
       <div className="setting-row"><div className="setting-icon"><Download size={18} /></div><div className="setting-copy"><strong>Export a backup</strong><span>Download a copy of your transactions, goals and invoices.</span></div><button className="button button-outline button-small" onClick={onExport}><Download size={14} /> Export JSON</button></div>
-      <div className="setting-row"><div className="setting-icon"><ArrowDownLeft size={18} /></div><div className="setting-copy"><strong>Restore a backup</strong><span>Bring your LensLedger JSON backup back to this device.</span></div><button className="button button-outline button-small" onClick={onImport}>Choose file</button></div>
+      <div className="setting-row"><div className="setting-icon"><ArrowDownLeft size={18} /></div><div className="setting-copy"><strong>Restore a backup</strong><span>Bring your Tiny Ledger JSON backup back to this device.</span></div><button className="button button-outline button-small" onClick={onImport}>Choose file</button></div>
       <div className="setting-row danger-setting"><div className="setting-icon"><Trash2 size={18} /></div><div className="setting-copy"><strong>Reset all data</strong><span>Restore the sample workspace and clear your saved changes.</span></div><button className="button button-danger-outline button-small" onClick={onReset}>Reset data</button></div>
     </section>
-    <div className="privacy-note"><span className="privacy-lock"><Settings size={16} /></span><div><strong>Private by design</strong><p>LensLedger stores your financial information in this browser’s local storage. There’s no account or finance backend — your studio’s numbers stay on this device.</p></div></div>
-    <div className="settings-version">LENSLedger <span>·</span> VERSION 1.0 <span>·</span> MADE FOR THE ONES BEHIND THE LENS</div>
+    <div className="privacy-note"><span className="privacy-lock"><Settings size={16} /></span><div><strong>Private by design</strong><p>Your ledger is stored in a private account record protected by Supabase Row Level Security. Every request is scoped to your signed-in account; your financial data is never read from shared browser storage.</p></div></div>
+    <div className="settings-version">TINY LEDGER <span>·</span> VERSION 1.0 <span>·</span> MADE FOR THE ONES BEHIND THE LENS</div>
   </div>;
+}
+
+function ProfileSettings({ user, onSignOut }: { user: User; onSignOut: () => Promise<void> }) {
+  const [name, setName] = useState(String(user.user_metadata.full_name ?? ""));
+  const [email, setEmail] = useState(user.email ?? "");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || busy) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const updates: { data: { full_name: string }; email?: string } = { data: { full_name: name.trim() } };
+      if (email.trim().toLowerCase() !== (user.email ?? "").toLowerCase()) updates.email = email.trim();
+      const { error } = await supabase.auth.updateUser(updates);
+      if (error) throw error;
+      setNotice({ kind: "success", text: updates.email ? "Name saved. Check your new email address to confirm the change." : "Your profile has been updated." });
+    } catch (error) {
+      console.error("Unable to update the account profile.", error);
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "Your profile couldn’t be updated. Please try again." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase || busy) return;
+    if (newPassword !== confirmPassword) {
+      setNotice({ kind: "error", text: "Those new passwords don’t match." });
+      return;
+    }
+    if (newPassword.length < 10) {
+      setNotice({ kind: "error", text: "Choose a new password with at least 10 characters." });
+      return;
+    }
+    setBusy(true);
+    setNotice(null);
+    try {
+      const { error: verifyError } = await supabase.auth.signInWithPassword({ email: user.email ?? "", password: currentPassword });
+      if (verifyError) throw new Error("Your current password doesn’t match.");
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) throw error;
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setNotice({ kind: "success", text: "Your password has been changed." });
+    } catch (error) {
+      console.error("Unable to update the account password.", error);
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "Your password couldn’t be updated. Please try again." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function logout() {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await onSignOut();
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "You couldn’t be signed out. Please try again." });
+      setBusy(false);
+    }
+  }
+
+  return <section className="panel settings-panel profile-panel">
+    <SectionTitle title="Your account" detail="The person behind the lens." />
+    <form className="profile-form" onSubmit={(event) => void saveProfile(event)}>
+      <label className="form-field"><span>Full name</span><input autoComplete="name" minLength={2} maxLength={100} value={name} onChange={(event) => setName(event.target.value)} required /></label>
+      <label className="form-field"><span>Email address <small>A confirmation email is sent when you change it.</small></span><input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+      <button className="button button-outline button-small profile-save" type="submit" disabled={busy}>Save profile</button>
+    </form>
+    <div className="profile-subsection"><h3>Change your password</h3><p>Confirm your current password before choosing a new one.</p>
+      <form className="profile-form password-form" onSubmit={(event) => void changePassword(event)}>
+        <label className="form-field"><span>Current password</span><input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>
+        <div className="profile-password-pair"><label className="form-field"><span>New password</span><input type="password" autoComplete="new-password" minLength={10} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label><label className="form-field"><span>Confirm new password</span><input type="password" autoComplete="new-password" minLength={10} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required /></label></div>
+        <button className="button button-outline button-small profile-save" type="submit" disabled={busy}>Update password</button>
+      </form>
+    </div>
+    {notice && <div className={`profile-notice ${notice.kind}`} role="status">{notice.kind === "success" ? <Check size={15} /> : <AlertCircle size={15} />}{notice.text}</div>}
+    <div className="profile-logout"><div><strong>Ready to wrap up?</strong><span>You’ll need to sign in again to see your studio.</span></div><button className="button button-danger-outline button-small" onClick={() => void logout()} disabled={busy}>Sign out</button></div>
+  </section>;
 }
 
 function Modal({ modal, data, onClose, onSaveTransaction, onSaveGoal, onSaveBudget, onSaveInvoice, onAllocate }: {
@@ -826,7 +963,7 @@ function Modal({ modal, data, onClose, onSaveTransaction, onSaveGoal, onSaveBudg
           <label className="form-field"><span>Amount to set aside</span><div className="input-prefix"><span>$</span><input type="number" min="0.01" step="0.01" value={allocation} onChange={(event) => setAllocation(event.target.value)} placeholder="0.00" autoFocus required /></div></label>
           <p className="form-hint">This will update your savings progress for {goalToFund.name}.</p>
         </>}
-        <div className="modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancel</button><button type="submit" className="button button-gold">{modal.kind === "allocate" ? "Set aside" : transaction || goal || budget || invoice ? "Save changes" : "Save to LensLedger"} <ChevronRight size={15} /></button></div>
+        <div className="modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancel</button><button type="submit" className="button button-gold">{modal.kind === "allocate" ? "Set aside" : transaction || goal || budget || invoice ? "Save changes" : "Save to Tiny Ledger"} <ChevronRight size={15} /></button></div>
       </form>
     </motion.div>
   </motion.div>;

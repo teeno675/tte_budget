@@ -1,20 +1,4 @@
-import { createDefaultData } from "../data/defaultData";
 import type { LedgerData } from "../types";
-
-export const STORAGE_KEY = "lensledger-data";
-
-export function loadData(): LedgerData {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return createDefaultData();
-    const parsed: unknown = JSON.parse(raw);
-    if (isLedgerData(parsed)) return parsed;
-    console.error("LensLedger data is invalid; loading sample data instead.");
-  } catch (error) {
-    console.error("Unable to load LensLedger data from local storage.", error);
-  }
-  return createDefaultData();
-}
 
 export function isLedgerData(value: unknown): value is LedgerData {
   if (!value || typeof value !== "object") return false;
