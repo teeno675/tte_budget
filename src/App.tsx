@@ -11,6 +11,7 @@ import {
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import type { User } from "@supabase/supabase-js";
+import { Analytics } from "@vercel/analytics/react";
 import { useAuth } from "./hooks/useAuth";
 import { useLedger } from "./hooks/useLedger";
 import {
@@ -74,14 +75,19 @@ function App() {
   if (recovery) return <AuthScreen initialView="reset" onViewChange={setAuthView} />;
   if (!session) return <AuthScreen initialView={authView} onViewChange={setAuthView} />;
 
-  return <AuthenticatedApp key={session.user.id} user={session.user} onSignOut={async () => {
-    if (!supabase) return;
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      console.error("Unable to sign out.", error);
-      throw new Error("You couldn’t be signed out. Please check your connection and try again.");
-    }
-  }} />;
+  return (
+    <>
+      <AuthenticatedApp key={session.user.id} user={session.user} onSignOut={async () => {
+        if (!supabase) return;
+        const { error } = await supabase.auth.signOut();
+        if (error) {
+          console.error("Unable to sign out.", error);
+          throw new Error("You couldn’t be signed out. Please check your connection and try again.");
+        }
+      }} />
+      <Analytics />
+    </>
+  );
 }
 
 function LoadingScreen({ label }: { label: string }) {
