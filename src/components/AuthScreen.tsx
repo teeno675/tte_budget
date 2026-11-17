@@ -118,7 +118,7 @@ export default function AuthScreen({ initialView = "login", onViewChange }: Auth
           {supabaseConfigurationError && <div className="auth-message error" role="alert"><ShieldCheck size={16} />{supabaseConfigurationError}</div>}
           <div className="setup-step"><span>01</span><p>Create a Supabase project for your studio app.</p></div>
           <div className="setup-step"><span>02</span><p>Copy <code>.env.example</code> to <code>.env.local</code>, then add your project URL and publishable key.</p></div>
-          <div className="setup-step"><span>03</span><p>Run <code>supabase/migrations/20261117000000_create_user_ledgers.sql</code> in your Supabase SQL Editor.</p></div>
+          <div className="setup-step"><span>03</span><p>Run both SQL files in <code>supabase/migrations/</code> in your Supabase SQL Editor to enable private ledgers and profile photos.</p></div>
           <div className="setup-security"><ShieldCheck size={16} /><span>Use only the public publishable key in your frontend. Never add a service-role key here.</span></div>
           <a className="button button-gold setup-doc-link" href="https://supabase.com/dashboard" target="_blank" rel="noreferrer">Open Supabase dashboard <ArrowRight size={15} /></a>
         </div> : <form className="auth-form" onSubmit={(event) => void submit(event)} noValidate>

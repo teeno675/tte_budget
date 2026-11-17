@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { LedgerData } from "../types";
 import { createDefaultData } from "../data/defaultData";
 import { supabase } from "../lib/supabase";
-import { isLedgerData } from "../utils/storage";
+import { normalizeLedgerData } from "../utils/storage";
 
 export function useLedger(userId: string): {
   data: LedgerData;
@@ -64,13 +64,14 @@ export function useLedger(userId: string): {
       }
 
       if (row) {
-        if (!isLedgerData(row.data)) {
+        const savedLedger = normalizeLedgerData(row.data);
+        if (!savedLedger) {
           console.error("The saved account ledger has an invalid data shape.");
           setError("The saved ledger data is invalid. Contact support before changing this account.");
           setLoading(false);
           return;
         }
-        setData(row.data);
+        setData(savedLedger);
       } else {
         const starter = createDefaultData();
         const { error: insertError } = await supabase!

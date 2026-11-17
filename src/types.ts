@@ -2,6 +2,26 @@ export type Theme = "dark" | "light";
 export type TransactionType = "income" | "expense";
 export type InvoiceStatus = "Draft" | "Sent" | "Paid";
 
+export const CURRENCY_OPTIONS = [
+  { code: "PGK", name: "Papua New Guinean kina" },
+  { code: "USD", name: "US dollar" },
+  { code: "AUD", name: "Australian dollar" },
+  { code: "NZD", name: "New Zealand dollar" },
+  { code: "EUR", name: "Euro" },
+  { code: "GBP", name: "British pound" },
+  { code: "CAD", name: "Canadian dollar" },
+  { code: "JPY", name: "Japanese yen" },
+  { code: "SGD", name: "Singapore dollar" },
+  { code: "FJD", name: "Fijian dollar" },
+  { code: "PHP", name: "Philippine peso" },
+  { code: "INR", name: "Indian rupee" },
+  { code: "CNY", name: "Chinese yuan" },
+  { code: "KES", name: "Kenyan shilling" },
+  { code: "ZAR", name: "South African rand" },
+] as const;
+
+export type CurrencyCode = (typeof CURRENCY_OPTIONS)[number]["code"];
+
 export interface Transaction {
   id: string;
   type: TransactionType;
@@ -44,8 +64,10 @@ export interface Invoice {
 }
 
 export interface LedgerData {
-  version: 1;
+  version: 2;
   theme: Theme;
+  currency: CurrencyCode;
+  baseCurrency: CurrencyCode;
   monthlyLimit: number;
   transactions: Transaction[];
   budgets: Budget[];

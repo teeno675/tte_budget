@@ -1,5 +1,29 @@
-export const currency = (amount: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(amount);
+import type { CurrencyCode } from "../types";
+
+export const currency = (amount: number, code: CurrencyCode = "USD") => {
+  if (code === "PGK") {
+    const formatted = new Intl.NumberFormat("en-PG", { maximumFractionDigits: 2 }).format(Math.abs(amount));
+    return amount < 0 ? `-K${formatted}` : `K${formatted}`;
+  }
+  return new Intl.NumberFormat("en", { style: "currency", currency: code, maximumFractionDigits: 2 }).format(amount);
+};
+
+export const currencyPrefix = (code: CurrencyCode) => {
+  if (code === "PGK") return "K";
+  return new Intl.NumberFormat("en", { style: "currency", currency: code })
+    .formatToParts(0)
+    .find((part) => part.type === "currency")?.value ?? code;
+};
+
+export const compactCurrency = (amount: number, code: CurrencyCode) => {
+  if (code === "PGK") {
+    const formatted = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(amount));
+    return amount < 0 ? `-K${formatted}` : `K${formatted}`;
+  }
+  return new Intl.NumberFormat("en", {
+    style: "currency", currency: code, notation: "compact", maximumFractionDigits: 1,
+  }).format(amount);
+};
 
 export const shortDate = (date: string) =>
   new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(`${date}T00:00:00`));

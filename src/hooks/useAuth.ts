@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseReady, supabase } from "../lib/supabase";
 
@@ -6,6 +6,8 @@ export function useAuth() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(isSupabaseReady);
   const [recovery, setRecovery] = useState(false);
+  const [justSignedIn, setJustSignedIn] = useState(false);
+  const clearJustSignedIn = useCallback(() => setJustSignedIn(false), []);
 
   useEffect(() => {
     if (!supabase) return;
@@ -26,7 +28,11 @@ export function useAuth() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!active) return;
       if (event === "PASSWORD_RECOVERY") setRecovery(true);
-      if (event === "SIGNED_OUT") setRecovery(false);
+      if (event === "SIGNED_IN") setJustSignedIn(true);
+      if (event === "SIGNED_OUT") {
+        setRecovery(false);
+        setJustSignedIn(false);
+      }
       setSession(nextSession);
       setLoading(false);
     });
@@ -37,5 +43,5 @@ export function useAuth() {
     };
   }, []);
 
-  return { session, loading, recovery, configured: isSupabaseReady };
+  return { session, loading, recovery, configured: isSupabaseReady, justSignedIn, clearJustSignedIn };
 }

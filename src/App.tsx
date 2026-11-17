@@ -14,13 +14,16 @@ import type { User } from "@supabase/supabase-js";
 import { Analytics } from "@vercel/analytics/react";
 import { useAuth } from "./hooks/useAuth";
 import { useLedger } from "./hooks/useLedger";
+import { useExchangeRates } from "./hooks/useExchangeRates";
+import { useAvatarUrl } from "./hooks/useAvatarUrl";
+import { createMoneyContext, MoneyProvider, useMoney } from "./context/CurrencyContext";
 import {
-  EXPENSE_CATEGORIES, INCOME_CATEGORIES, type Budget, type Goal, type Invoice, type LedgerData,
-  type Page, type Transaction, type TransactionType,
+  CURRENCY_OPTIONS, EXPENSE_CATEGORIES, INCOME_CATEGORIES, type Budget, type CurrencyCode,
+  type Goal, type Invoice, type LedgerData, type Page, type Transaction, type TransactionType,
 } from "./types";
-import { currency, dateString, isCurrentMonth, monthLabel, shortDate, todayString } from "./utils/format";
+import { currencyPrefix, dateString, isCurrentMonth, monthLabel, shortDate, todayString } from "./utils/format";
 import { createDefaultData } from "./data/defaultData";
-import { isLedgerData } from "./utils/storage";
+import { normalizeLedgerData } from "./utils/storage";
 import { BudgetLine, ChartTooltip, EmptyState, MetricCard, ProgressBar, SectionTitle, TransactionList } from "./components/Primitives";
 import AuthScreen, { type AuthView } from "./components/AuthScreen";
 import { supabase } from "./lib/supabase";
@@ -67,7 +70,7 @@ function displayName(user: User) {
 }
 
 function App() {
-  const { session, loading: authLoading, recovery, configured } = useAuth();
+  const { session, loading: authLoading, recovery, configured, justSignedIn, clearJustSignedIn } = useAuth();
   const [authView, setAuthView] = useState<AuthView>("login");
 
   if (!configured) return <AuthScreen initialView="setup" />;
@@ -77,7 +80,7 @@ function App() {
 
   return (
     <>
-      <AuthenticatedApp key={session.user.id} user={session.user} onSignOut={async () => {
+      <AuthenticatedApp key={session.user.id} user={session.user} justSignedIn={justSignedIn} onWelcomeComplete={clearJustSignedIn} onSignOut={async () => {
         if (!supabase) return;
         const { error } = await supabase.auth.signOut();
         if (error) {
@@ -99,15 +102,29 @@ function LedgerErrorScreen({ message, onRetry, onSignOut }: { message: string; o
   return <main className="auth-loading"><span className="auth-error-icon"><AlertCircle size={22} /></span><h1>Your ledger needs a moment.</h1><p>{message}</p>{signOutError && <p role="alert">{signOutError}</p>}<div className="ledger-error-actions"><button className="button button-gold" onClick={onRetry}>Try again</button><button className="button button-outline" onClick={() => void onSignOut().catch((error: unknown) => setSignOutError(error instanceof Error ? error.message : "Unable to sign out. Please try again."))}>Sign out</button></div></main>;
 }
 
-function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Promise<void> }) {
+function AuthenticatedApp({ user, justSignedIn, onWelcomeComplete, onSignOut }: { user: User; justSignedIn: boolean; onWelcomeComplete: () => void; onSignOut: () => Promise<void> }) {
   const { data, setData, loading: ledgerLoading, error: ledgerError, saveError, retry, flush } = useLedger(user.id);
+  const { snapshot: exchangeRates, loading: ratesLoading, error: ratesError, refresh: refreshRates } = useExchangeRates();
+  const { avatarUrl, avatarError } = useAvatarUrl(user);
+  const money = useMemo(() => createMoneyContext(data.baseCurrency, data.currency, exchangeRates), [data.baseCurrency, data.currency, exchangeRates]);
   const [page, setPage] = useState<Page>("dashboard");
   const [modal, setModal] = useState<ModalState>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [monthOffset, setMonthOffset] = useState(0);
+  const [welcomeVisible, setWelcomeVisible] = useState(false);
   const [transactionFilter, setTransactionFilter] = useState({ query: "", type: "all", category: "all", from: "", to: "" });
   const importRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!justSignedIn) return;
+    setWelcomeVisible(true);
+    const timer = window.setTimeout(() => {
+      setWelcomeVisible(false);
+      onWelcomeComplete();
+    }, 2600);
+    return () => window.clearTimeout(timer);
+  }, [justSignedIn, onWelcomeComplete]);
 
   const selectedMonth = useMemo(() => new Date(new Date().getFullYear(), new Date().getMonth() + monthOffset, 1), [monthOffset]);
   const selectedMonthTransactions = useMemo(() => data.transactions.filter((item) => {
@@ -227,7 +244,7 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
   }
 
   function deleteTransaction(transaction: Transaction) {
-    if (!window.confirm(`Delete this ${transaction.type} of ${currency(transaction.amount)}? This can’t be undone.`)) return;
+    if (!window.confirm(`Delete this ${transaction.type} of ${money.format(transaction.amount)}? This can’t be undone.`)) return;
     updateData((current) => ({
       ...current,
       transactions: current.transactions.filter((item) => item.id !== transaction.id),
@@ -275,9 +292,10 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
     if (!file) return;
     try {
       const parsed: unknown = JSON.parse(await file.text());
-      if (!isLedgerData(parsed)) throw new Error("This file doesn’t look like a Tiny Ledger backup.");
+      const importedLedger = normalizeLedgerData(parsed);
+      if (!importedLedger) throw new Error("This file doesn’t look like a Tiny Ledger backup.");
       if (!window.confirm("Import this backup? It will replace the ledger currently saved to your account.")) return;
-      setData(parsed);
+      setData(importedLedger);
       notify("Backup imported successfully.");
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Could not read that backup file.");
@@ -287,9 +305,9 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
   }
 
   function resetData() {
-    if (!window.confirm("Reset your Tiny Ledger account to the sample data? This replaces the ledger saved to your account and can’t be undone. Export a backup first if you’d like to keep a copy.")) return;
+    if (!window.confirm("Clear your Tiny Ledger account? This replaces the ledger saved to your account with an empty ledger and can’t be undone. Export a backup first if you’d like to keep a copy.")) return;
     setData(createDefaultData());
-    notify("Sample data restored.");
+    notify("Your ledger is clear.");
   }
 
   function navigate(next: Page) {
@@ -311,6 +329,7 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
   if (ledgerError) return <LedgerErrorScreen message={ledgerError} onRetry={retry} onSignOut={signOutSafely} />;
 
   return (
+    <MoneyProvider value={money}>
     <div className={`app-shell theme-${data.theme}`}>
       <aside className={`sidebar ${mobileMenuOpen ? "sidebar-open" : ""}`}>
         <button className="brand" onClick={() => navigate("dashboard")} aria-label="Tiny Ledger home">
@@ -336,8 +355,8 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
             <Settings size={18} strokeWidth={1.8} /><span>Settings</span>
           </button>
           <div className="profile-row">
-          <div className="avatar">{displayName(user).charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || "A"}</div>
-          <div><strong>{displayName(user) || user.email}</strong><span>Independent photographer</span></div>
+            <div className="avatar">{avatarUrl ? <img src={avatarUrl} alt="" /> : displayName(user).charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || "A"}</div>
+            <div><strong>{displayName(user) || user.email}</strong><span>Independent photographer</span></div>
             <MoreHorizontal size={17} className="muted-icon" />
           </div>
         </div>
@@ -354,7 +373,7 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
             <button className="theme-toggle" onClick={toggleTheme} aria-label={`Switch to ${data.theme === "dark" ? "light" : "dark"} mode`} title={`Switch to ${data.theme === "dark" ? "light" : "dark"} mode`}>
               {data.theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <button className="top-avatar" aria-label="Open account settings" onClick={() => navigate("settings")}>{displayName(user).charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || "A"}</button>
+            <button className="top-avatar" aria-label="Open account settings" onClick={() => navigate("settings")}>{avatarUrl ? <img src={avatarUrl} alt="" /> : displayName(user).charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || "A"}</button>
           </div>
         </header>
 
@@ -397,7 +416,14 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
                 updateData((current) => ({ ...current, invoices: current.invoices.filter((item) => item.id !== invoice.id) }));
                 notify("Invoice deleted.");
               }} />}
-              {page === "settings" && <SettingsPage data={data} user={user} onExport={exportData} onImport={() => importRef.current?.click()} onReset={resetData} onTheme={toggleTheme} onSignOut={signOutSafely} />}
+              {page === "settings" && <SettingsPage
+                data={data} user={user} avatarUrl={avatarUrl} avatarError={avatarError}
+                ratesLoading={ratesLoading} ratesError={ratesError} ratesUpdatedAt={exchangeRates?.updatedAt}
+                onCurrencyChange={(currency) => updateData((current) => ({ ...current, currency }))}
+                onRefreshRates={() => void refreshRates()}
+                onExport={exportData} onImport={() => importRef.current?.click()} onReset={resetData}
+                onTheme={toggleTheme} onSignOut={signOutSafely}
+              />}
             </motion.div>
           </AnimatePresence>
           <footer className="page-footer"><span>Made for the ones behind the lens.</span><span>Tiny Ledger <span className="footer-dot">·</span> Your studio, in balance.</span></footer>
@@ -411,8 +437,12 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
           onSaveGoal={saveGoal} onSaveBudget={saveBudget} onSaveInvoice={saveInvoice} onAllocate={allocateToGoal}
         />}
         {toast && <motion.div className="toast" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }}><Check size={16} />{toast}</motion.div>}
+        {welcomeVisible && <motion.div className="welcome-back-toast" role="status" initial={{ opacity: 0, y: -12, scale: .96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -8, scale: .98 }} transition={{ duration: .24 }}>
+          <Sparkles size={16} /><span>Welcome back, <strong>{displayName(user) || user.email?.split("@")[0] || "there"}</strong></span>
+        </motion.div>}
       </AnimatePresence>
     </div>
+    </MoneyProvider>
   );
 }
 
@@ -420,6 +450,7 @@ function Dashboard({ data, income, expenses, remaining, budgetRemaining, health,
   data: LedgerData; income: number; expenses: number; remaining: number; budgetRemaining: number; health: string; monthContributions: number; selectedMonth: Date;
   onAdd: (type: TransactionType) => void; onNavigate: (page: Page) => void; onCreateInvoice: () => void; onEditTransaction: (id: string) => void;
 }) {
+  const { format, formatCompact } = useMoney();
   const monthTx = data.transactions.filter((item) => {
     const date = new Date(`${item.date}T00:00:00`);
     return date.getMonth() === selectedMonth.getMonth() && date.getFullYear() === selectedMonth.getFullYear();
@@ -454,10 +485,10 @@ function Dashboard({ data, income, expenses, remaining, budgetRemaining, health,
     </section>
 
     <section className="metrics-grid">
-      <MetricCard label="Income" value={currency(income)} note="Money earned this month" icon={ArrowDownLeft} tone="icon-green" change="↗ In focus" />
-      <MetricCard label="Expenses" value={currency(expenses)} note="Spent with intention" icon={ArrowUpRight} tone="icon-rose" />
-      <MetricCard label="Budget left" value={currency(budgetRemaining)} note="Within this month’s spending limit" icon={Wallet} tone="icon-gold" />
-      <MetricCard label="In savings" value={currency(goalTotal)} note={`${Math.round(goalTarget ? goalTotal / goalTarget * 100 : 0)}% of your goals`} icon={Target} tone="icon-lilac" />
+      <MetricCard label="Income" value={format(income)} note="Money earned this month" icon={ArrowDownLeft} tone="icon-green" change="↗ In focus" />
+      <MetricCard label="Expenses" value={format(expenses)} note="Spent with intention" icon={ArrowUpRight} tone="icon-rose" />
+      <MetricCard label="Budget left" value={format(budgetRemaining)} note="Within this month’s spending limit" icon={Wallet} tone="icon-gold" />
+      <MetricCard label="In savings" value={format(goalTotal)} note={`${Math.round(goalTarget ? goalTotal / goalTarget * 100 : 0)}% of your goals`} icon={Target} tone="icon-lilac" />
     </section>
 
     <section className="dashboard-grid">
@@ -469,19 +500,19 @@ function Dashboard({ data, income, expenses, remaining, budgetRemaining, health,
             <ComposedChart data={chartData} margin={{ top: 8, right: 4, left: -18, bottom: 0 }}>
               <CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="3 5" />
               <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 11 }} dy={10} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 10 }} tickFormatter={(value: number) => value === 0 ? "$0" : `$${value / 1000}k`} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 10 }} tickFormatter={(value: number) => formatCompact(value)} />
               <Tooltip content={<ChartTooltip />} />
               <Bar dataKey="income" name="Income" fill="#d9b879" radius={[4, 4, 0, 0]} maxBarSize={24} />
               <Bar dataKey="expenses" name="Expenses" fill="#81978b" radius={[4, 4, 0, 0]} maxBarSize={24} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
-        <div className="chart-summary"><span><i className="summary-icon up"><TrendingUp size={14} /></i> You earned <b>{currency(income)}</b> this month</span><span>Net available <b>{currency(remaining)}</b></span></div>
+        <div className="chart-summary"><span><i className="summary-icon up"><TrendingUp size={14} /></i> You earned <b>{format(income)}</b> this month</span><span>Net available <b>{format(remaining)}</b></span></div>
       </div>
       <div className="panel budget-panel">
         <SectionTitle title="Spending plan" detail="A little structure, a lot of breathing room" action={<button className="icon-link" onClick={() => onNavigate("budgets")} aria-label="View all budgets"><ChevronRight size={18} /></button>} />
         <div className="overall-spend">
-          <div><span>Monthly limit</span><strong>{currency(expenses)} <small>of {currency(data.monthlyLimit)}</small></strong></div>
+          <div><span>Monthly limit</span><strong>{format(expenses)} <small>of {format(data.monthlyLimit)}</small></strong></div>
           <span className={`budget-percent ${expenseRatio >= 1 ? "over" : expenseRatio >= .78 ? "near" : ""}`}>{Math.round(expenseRatio * 100)}%</span>
         </div>
         <ProgressBar value={expenses} limit={data.monthlyLimit} />
@@ -500,15 +531,15 @@ function Dashboard({ data, income, expenses, remaining, budgetRemaining, health,
       </div>
       <div className="panel goals-panel">
         <SectionTitle title="Little by little" detail="Your savings, taking shape" action={<button className="icon-link" onClick={() => onNavigate("goals")} aria-label="View savings goals"><ChevronRight size={18} /></button>} />
-        <div className="goal-total-row"><strong>{currency(goalTotal)}</strong><span>of {currency(goalTarget)}</span></div>
+        <div className="goal-total-row"><strong>{format(goalTotal)}</strong><span>of {format(goalTarget)}</span></div>
         <ProgressBar value={goalTotal} limit={goalTarget} />
         <div className="mini-goals">
-          {data.goals.slice(0, 2).map((goal) => <div className="mini-goal" key={goal.id}><span className="mini-goal-icon"><Target size={15} /></span><div><strong>{goal.name}</strong><span>{currency(goal.currentAmount)} <i>of</i> {currency(goal.targetAmount)}</span></div><span className="mini-goal-percent">{Math.round(goal.currentAmount / goal.targetAmount * 100)}%</span></div>)}
+          {data.goals.slice(0, 2).map((goal) => <div className="mini-goal" key={goal.id}><span className="mini-goal-icon"><Target size={15} /></span><div><strong>{goal.name}</strong><span>{format(goal.currentAmount)} <i>of</i> {format(goal.targetAmount)}</span></div><span className="mini-goal-percent">{Math.round(goal.currentAmount / goal.targetAmount * 100)}%</span></div>)}
         </div>
         <button className="panel-bottom-link" onClick={() => onNavigate("goals")}>Visit your goals <ChevronRight size={15} /></button>
       </div>
     </section>
-    <div className="dashboard-footnote"><Sparkles size={15} /><span>{outstanding > 0 ? `${currency(outstanding)} is on its way from ${data.invoices.filter((invoice) => invoice.status === "Sent").length} sent invoice${data.invoices.filter((invoice) => invoice.status === "Sent").length === 1 ? "" : "s"}.` : "You’ve got a clear view of your finances. Keep going."}</span><span className="saving-note">{currency(monthContributions)} tucked away this month</span></div>
+    <div className="dashboard-footnote"><Sparkles size={15} /><span>{outstanding > 0 ? `${format(outstanding)} is on its way from ${data.invoices.filter((invoice) => invoice.status === "Sent").length} sent invoice${data.invoices.filter((invoice) => invoice.status === "Sent").length === 1 ? "" : "s"}.` : "You’ve got a clear view of your finances. Keep going."}</span><span className="saving-note">{format(monthContributions)} tucked away this month</span></div>
   </div>;
 }
 
@@ -572,12 +603,13 @@ function TransactionsPage({ data, filtered, filter, setFilter, onAdd, onEdit, on
   setFilter: (filter: { query: string; type: string; category: string; from: string; to: string }) => void;
   onAdd: (type: TransactionType) => void; onEdit: (id: string) => void; onDelete: (item: Transaction) => void; categories: string[];
 }) {
+  const { format } = useMoney();
   const activeMonth = data.transactions.filter((item) => isCurrentMonth(item.date));
   const set = (key: keyof typeof filter, value: string) => setFilter({ ...filter, [key]: value });
   return <div className="content-stack">
     <div className="inline-metrics">
-      <div className="inline-metric"><span>Income this month</span><strong className="positive">{currency(sum(activeMonth, "income"))}</strong></div>
-      <div className="inline-metric"><span>Expenses this month</span><strong>{currency(sum(activeMonth, "expense"))}</strong></div>
+      <div className="inline-metric"><span>Income this month</span><strong className="positive">{format(sum(activeMonth, "income"))}</strong></div>
+      <div className="inline-metric"><span>Expenses this month</span><strong>{format(sum(activeMonth, "expense"))}</strong></div>
       <div className="inline-metric"><span>All transactions</span><strong>{data.transactions.length}</strong></div>
     </div>
     <section className="panel data-panel">
@@ -594,7 +626,7 @@ function TransactionsPage({ data, filtered, filter, setFilter, onAdd, onEdit, on
           <div className="table-name"><span className={`transaction-type-icon ${item.type}`}>{item.type === "income" ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}</span><div><strong>{item.notes || item.category}</strong><span>{item.tags.length ? item.tags.map((tag) => `#${tag}`).join(" ") : "—"}</span></div></div>
           <span className="table-category">{item.category}</span><span className="table-date">{shortDate(item.date)}</span>
           <span><i className={`type-pill ${item.type}`}>{item.type}</i></span>
-          <strong className={`table-amount ${item.type}`}>{item.type === "income" ? "+" : "−"}{currency(item.amount)}</strong>
+          <strong className={`table-amount ${item.type}`}>{item.type === "income" ? "+" : "−"}{format(item.amount)}</strong>
           <div className="table-actions"><button className="row-icon-button" onClick={() => onEdit(item.id)} aria-label="Edit transaction"><MoreHorizontal size={17} /></button><button className="row-icon-button delete-row-button" onClick={() => onDelete(item)} aria-label="Delete transaction"><Trash2 size={15} /></button></div>
         </div>)}
       </div> : <EmptyState title="Nothing in this frame." message={data.transactions.length ? "Try changing the filters or search terms." : "Add a transaction to start bringing your finances into focus."} action={!data.transactions.length && <button className="button button-gold" onClick={() => onAdd("income")}><Plus size={15} /> Add your first transaction</button>} />}
@@ -606,8 +638,18 @@ function BudgetsPage({ data, selectedMonth, onAdd, onEdit, onDelete, onSetOveral
   data: LedgerData; selectedMonth: Date; onAdd: () => void; onEdit: (id: string) => void;
   onDelete: (budget: Budget) => void; onSetOverall: (value: number) => void;
 }) {
+  const money = useMoney();
+  const { currency: displayCurrency, format, toBase, toDisplay } = money;
   const [editingOverall, setEditingOverall] = useState(false);
-  const [limit, setLimit] = useState(String(data.monthlyLimit));
+  const [limit, setLimit] = useState(String(toDisplay(data.monthlyLimit)));
+  const previousMoney = useRef(money);
+  useEffect(() => {
+    const previous = previousMoney.current;
+    if (previous.currency !== money.currency || previous.rateVersion !== money.rateVersion) {
+      setLimit((value) => value ? money.toDisplay(previous.toBase(Number(value))).toFixed(2) : value);
+    }
+    previousMoney.current = money;
+  }, [money]);
   const monthTx = data.transactions.filter((item) => {
     const date = new Date(`${item.date}T00:00:00`);
     return date.getMonth() === selectedMonth.getMonth() && date.getFullYear() === selectedMonth.getFullYear();
@@ -621,9 +663,9 @@ function BudgetsPage({ data, selectedMonth, onAdd, onEdit, onDelete, onSetOveral
   return <div className="content-stack">
     <section className="overall-budget-card">
       <div className="overall-budget-copy"><span className="eyebrow">YOUR MONTHLY GUARDRAIL</span><h2>A plan that leaves room to breathe.</h2><p>Keep your spending aligned with what matters most.</p></div>
-      <div className="overall-budget-numbers"><span>Spent so far</span><strong>{currency(expenseTotal)} <small>of {currency(data.monthlyLimit)}</small></strong><ProgressBar value={expenseTotal} limit={data.monthlyLimit} /></div>
-      {editingOverall ? <form className="limit-editor" onSubmit={(event) => { event.preventDefault(); const amount = Number(limit); if (amount > 0) onSetOverall(amount); setEditingOverall(false); }}><label className="sr-label" htmlFor="overall-limit">Monthly limit</label><span>$</span><input id="overall-limit" type="number" min="1" step="50" value={limit} onChange={(event) => setLimit(event.target.value)} required /><button className="button button-gold button-small" type="submit">Save</button></form>
-        : <button className="button button-outline button-small" onClick={() => { setLimit(String(data.monthlyLimit)); setEditingOverall(true); }}>Adjust limit</button>}
+      <div className="overall-budget-numbers"><span>Spent so far</span><strong>{format(expenseTotal)} <small>of {format(data.monthlyLimit)}</small></strong><ProgressBar value={expenseTotal} limit={data.monthlyLimit} /></div>
+      {editingOverall ? <form className="limit-editor" onSubmit={(event) => { event.preventDefault(); const amount = toBase(Number(limit)); if (amount > 0) onSetOverall(amount); setEditingOverall(false); }}><label className="sr-label" htmlFor="overall-limit">Monthly limit</label><span>{currencyPrefix(displayCurrency)}</span><input id="overall-limit" type="number" min="1" step="50" value={limit} onChange={(event) => setLimit(event.target.value)} required /><button className="button button-gold button-small" type="submit">Save</button></form>
+        : <button className="button button-outline button-small" onClick={() => { setLimit(String(toDisplay(data.monthlyLimit))); setEditingOverall(true); }}>Adjust limit</button>}
     </section>
     <section className="panel data-panel">
       <SectionTitle title="Category budgets" detail="Simple guardrails for the things your studio spends on." action={<button className="button button-gold" onClick={onAdd}><Plus size={16} /> Add a budget</button>} />
@@ -633,12 +675,12 @@ function BudgetsPage({ data, selectedMonth, onAdd, onEdit, onDelete, onSetOveral
           const tone = ratio >= 1 ? "budget-status-danger" : ratio >= .78 ? "budget-status-warning" : "budget-status-good";
           return <div className="budget-category-card" key={budget.id}>
             <div className="category-card-top"><span className="category-art"><Camera size={17} /></span><button className="row-icon-button" aria-label={`Edit ${budget.category} budget`} onClick={() => onEdit(budget.id)}><MoreHorizontal size={18} /></button></div>
-            <h3>{budget.category}</h3><div className="budget-amount-row"><strong>{currency(budget.spent)}</strong><span>of {currency(budget.limit)}</span></div>
+            <h3>{budget.category}</h3><div className="budget-amount-row"><strong>{format(budget.spent)}</strong><span>of {format(budget.limit)}</span></div>
             <ProgressBar value={budget.spent} limit={budget.limit} />
             <div className="budget-card-bottom"><span className={tone}>{ratio >= 1 ? "Limit reached" : ratio >= .78 ? "Almost there" : "Looking good"}</span><button onClick={() => onDelete(budget)} aria-label={`Delete ${budget.category} budget`}><Trash2 size={14} /></button></div>
           </div>;
         })}
-        {unbudgeted.map((category) => <div className="budget-category-card unbudgeted-card" key={category}><div className="category-card-top"><span className="category-art"><CircleHelp size={17} /></span></div><h3>{category}</h3><div className="budget-amount-row"><strong>{currency(sum(monthTx.filter((item) => item.category === category), "expense"))}</strong><span>unbudgeted</span></div><p className="unbudgeted-note">Add a limit to keep this one in view.</p><button className="text-link" onClick={onAdd}>Set a budget <ChevronRight size={14} /></button></div>)}
+        {unbudgeted.map((category) => <div className="budget-category-card unbudgeted-card" key={category}><div className="category-card-top"><span className="category-art"><CircleHelp size={17} /></span></div><h3>{category}</h3><div className="budget-amount-row"><strong>{format(sum(monthTx.filter((item) => item.category === category), "expense"))}</strong><span>unbudgeted</span></div><p className="unbudgeted-note">Add a limit to keep this one in view.</p><button className="text-link" onClick={onAdd}>Set a budget <ChevronRight size={14} /></button></div>)}
         <button className="add-budget-card" onClick={onAdd}><span><Plus size={19} /></span><strong>Give a category a limit</strong><small>Build a spending plan that fits you.</small></button>
       </div> : <EmptyState title="Start with a little structure." message="Set category limits that make sense for your studio." action={<button className="button button-gold" onClick={onAdd}><Plus size={15} /> Create your first budget</button>} />}
     </section>
@@ -649,14 +691,15 @@ function BudgetsPage({ data, selectedMonth, onAdd, onEdit, onDelete, onSetOveral
 function GoalsPage({ data, onAdd, onEdit, onAllocate, onDelete }: {
   data: LedgerData; onAdd: () => void; onEdit: (id: string) => void; onAllocate: (id: string) => void; onDelete: (goal: Goal) => void;
 }) {
+  const { format } = useMoney();
   const totalSaved = data.goals.reduce((total, goal) => total + goal.currentAmount, 0);
   const totalTarget = data.goals.reduce((total, goal) => total + goal.targetAmount, 0);
   const progress = totalTarget ? Math.min(totalSaved / totalTarget * 100, 100) : 0;
   return <div className="content-stack">
     <section className="goals-hero">
       <div className="goals-hero-icon"><Target size={23} /></div>
-      <div className="goals-hero-copy"><span className="eyebrow">THE FUTURE LOOKS GOOD</span><h2>Every little bit is a beginning.</h2><p>You’ve set aside {currency(totalSaved)} across {data.goals.length} thoughtful goal{data.goals.length === 1 ? "" : "s"}.</p></div>
-      <div className="goal-hero-progress"><span className="goal-ring" style={{ "--progress": `${progress}%` } as React.CSSProperties}><strong>{Math.round(progress)}<small>%</small></strong></span><span>{currency(totalSaved)} saved</span></div>
+      <div className="goals-hero-copy"><span className="eyebrow">THE FUTURE LOOKS GOOD</span><h2>Every little bit is a beginning.</h2><p>You’ve set aside {format(totalSaved)} across {data.goals.length} thoughtful goal{data.goals.length === 1 ? "" : "s"}.</p></div>
+      <div className="goal-hero-progress"><span className="goal-ring" style={{ "--progress": `${progress}%` } as React.CSSProperties}><strong>{Math.round(progress)}<small>%</small></strong></span><span>{format(totalSaved)} saved</span></div>
     </section>
     <section className="panel data-panel">
       <SectionTitle title="Things you’re looking forward to" detail="Big dreams, broken into smaller, lovely steps." action={<button className="button button-gold" onClick={onAdd}><Plus size={16} /> New goal</button>} />
@@ -669,20 +712,21 @@ function GoalsPage({ data, onAdd, onEdit, onAllocate, onDelete }: {
             <div className="goal-card-head"><span className={`goal-art goal-art-${index % 4}`}><Target size={18} /></span><button className="row-icon-button" onClick={() => onEdit(goal.id)} aria-label={`Edit ${goal.name}`}><MoreHorizontal size={18} /></button></div>
             <span className="goal-due">AIMING FOR {new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(due).toUpperCase()}</span>
             <h3>{goal.name}</h3>
-            <div className="goal-progress-copy"><strong>{currency(goal.currentAmount)}</strong><span>{Math.round(percent)}% there</span></div>
+            <div className="goal-progress-copy"><strong>{format(goal.currentAmount)}</strong><span>{Math.round(percent)}% there</span></div>
             <ProgressBar value={goal.currentAmount} limit={goal.targetAmount} className="goal-progress" />
-            <div className="goal-remaining">{currency(remaining)} <span>left to go</span></div>
+            <div className="goal-remaining">{format(remaining)} <span>left to go</span></div>
             <div className="goal-card-actions"><button className="button button-gold button-small" onClick={() => onAllocate(goal.id)}><Plus size={14} /> Add to goal</button><button className="row-icon-button delete-row-button" onClick={() => onDelete(goal)} aria-label={`Delete ${goal.name}`}><Trash2 size={15} /></button></div>
           </motion.article>;
         })}
         <button className="add-goal-card" onClick={onAdd}><span className="add-goal-orb"><Plus size={20} /></span><strong>Dream up another goal</strong><small>You can get there, one step at a time.</small></button>
       </div> : <EmptyState title="What are you working toward?" message="Give your next big idea a name, a number and a little momentum." action={<button className="button button-gold" onClick={onAdd}><Plus size={15} /> Create a savings goal</button>} />}
     </section>
-    {data.contributions.length > 0 && <section className="panel contribution-panel"><SectionTitle title="Recent progress" detail="Every contribution deserves a little credit." /><div className="contribution-list">{[...data.contributions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5).map((item) => <div key={item.id}><span className="contribution-check"><Check size={14} /></span><span>{data.goals.find((goal) => goal.id === item.goalId)?.name ?? "Savings goal"}</span><small>{shortDate(item.date)}</small><strong>+{currency(item.amount)}</strong></div>)}</div></section>}
+    {data.contributions.length > 0 && <section className="panel contribution-panel"><SectionTitle title="Recent progress" detail="Every contribution deserves a little credit." /><div className="contribution-list">{[...data.contributions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5).map((item) => <div key={item.id}><span className="contribution-check"><Check size={14} /></span><span>{data.goals.find((goal) => goal.id === item.goalId)?.name ?? "Savings goal"}</span><small>{shortDate(item.date)}</small><strong>+{format(item.amount)}</strong></div>)}</div></section>}
   </div>;
 }
 
 function ReportsPage({ data, selectedMonth }: { data: LedgerData; selectedMonth: Date }) {
+  const { format, formatCompact } = useMoney();
   const monthly = buildMonthlyData(data.transactions, 6, selectedMonth);
   const categoryTrend = buildCategoryTrendData(data.transactions, selectedMonth);
   const categoryTrendNames = Object.keys(categoryTrend[0] ?? {}).filter((key) => key !== "label");
@@ -698,23 +742,23 @@ function ReportsPage({ data, selectedMonth }: { data: LedgerData; selectedMonth:
   const monthExpense = sum(data.transactions.filter((item) => isSelectedMonth(item.date)), "expense");
   return <div className="content-stack">
     <div className="report-summary">
-      <MetricCard label="Income this month" value={currency(monthIncome)} note="Across all your work" icon={ArrowDownLeft} tone="icon-green" />
-      <MetricCard label="Expenses this month" value={currency(monthExpense)} note="Across every category" icon={ArrowUpRight} tone="icon-rose" />
-      <MetricCard label="Net this month" value={currency(monthIncome - monthExpense)} note="Before savings goals" icon={TrendingUp} tone="icon-gold" />
+      <MetricCard label="Income this month" value={format(monthIncome)} note="Across all your work" icon={ArrowDownLeft} tone="icon-green" />
+      <MetricCard label="Expenses this month" value={format(monthExpense)} note="Across every category" icon={ArrowUpRight} tone="icon-rose" />
+      <MetricCard label="Net this month" value={format(monthIncome - monthExpense)} note="Before savings goals" icon={TrendingUp} tone="icon-gold" />
     </div>
     <div className="reports-grid">
       <section className="panel report-panel wide-report"><SectionTitle title="Income & expenses" detail="A six-month view of your studio’s rhythm." />
-        <div className="report-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={monthly} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="3 5" /><XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 11 }} dy={10} /><YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 10 }} tickFormatter={(value: number) => `$${value / 1000}k`} /><Tooltip content={<ChartTooltip />} /><Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "var(--text-muted)" }} /><Bar dataKey="income" name="Income" fill="#d9b879" radius={[4, 4, 0, 0]} maxBarSize={27} /><Bar dataKey="expenses" name="Expenses" fill="#81978b" radius={[4, 4, 0, 0]} maxBarSize={27} /></BarChart></ResponsiveContainer></div>
+        <div className="report-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={monthly} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="3 5" /><XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 11 }} dy={10} /><YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 10 }} tickFormatter={(value: number) => formatCompact(value)} /><Tooltip content={<ChartTooltip />} /><Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "var(--text-muted)" }} /><Bar dataKey="income" name="Income" fill="#d9b879" radius={[4, 4, 0, 0]} maxBarSize={27} /><Bar dataKey="expenses" name="Expenses" fill="#81978b" radius={[4, 4, 0, 0]} maxBarSize={27} /></BarChart></ResponsiveContainer></div>
       </section>
       <section className="panel report-panel"><SectionTitle title="Where it goes" detail="This month’s expenses, by category." />
-        {categoryData.length ? <><div className="donut-wrap"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={categoryData} dataKey="value" nameKey="name" innerRadius="66%" outerRadius="88%" paddingAngle={4} stroke="none">{categoryData.map((item, index) => <Cell key={item.name} fill={chartColors[index % chartColors.length]} />)}</Pie><Tooltip content={<ChartTooltip />} /></PieChart></ResponsiveContainer><div className="donut-center"><strong>{currency(monthExpense)}</strong><span>spent</span></div></div><div className="category-legend">{categoryData.slice(0, 5).map((item, index) => <div key={item.name}><span><i style={{ background: chartColors[index % chartColors.length] }} />{item.name}</span><strong>{currency(item.value)}</strong></div>)}</div></> : <EmptyState title="It starts with one." message="Your spending breakdown will appear here." />}
+        {categoryData.length ? <><div className="donut-wrap"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={categoryData} dataKey="value" nameKey="name" innerRadius="66%" outerRadius="88%" paddingAngle={4} stroke="none">{categoryData.map((item, index) => <Cell key={item.name} fill={chartColors[index % chartColors.length]} />)}</Pie><Tooltip content={<ChartTooltip />} /></PieChart></ResponsiveContainer><div className="donut-center"><strong>{format(monthExpense)}</strong><span>spent</span></div></div><div className="category-legend">{categoryData.slice(0, 5).map((item, index) => <div key={item.name}><span><i style={{ background: chartColors[index % chartColors.length] }} />{item.name}</span><strong>{format(item.value)}</strong></div>)}</div></> : <EmptyState title="It starts with one." message="Your spending breakdown will appear here." />}
       </section>
       <section className="panel report-panel wide-report"><SectionTitle title="Category spending trends" detail="See how the things your studio spends on change over time." />
-        {categoryTrendNames.length ? <div className="report-chart report-chart-short"><ResponsiveContainer width="100%" height="100%"><LineChart data={categoryTrend} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="3 5" /><XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 11 }} dy={10} /><YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 10 }} tickFormatter={(value: number) => `$${value / 1000}k`} /><Tooltip content={<ChartTooltip />} /><Legend iconType="circle" wrapperStyle={{ fontSize: 10, color: "var(--text-muted)" }} />{categoryTrendNames.map((category, index) => <Line key={category} type="monotone" dataKey={category} stroke={chartColors[index % chartColors.length]} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 4 }} />)}</LineChart></ResponsiveContainer></div>
+        {categoryTrendNames.length ? <div className="report-chart report-chart-short"><ResponsiveContainer width="100%" height="100%"><LineChart data={categoryTrend} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="3 5" /><XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 11 }} dy={10} /><YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 10 }} tickFormatter={(value: number) => formatCompact(value)} /><Tooltip content={<ChartTooltip />} /><Legend iconType="circle" wrapperStyle={{ fontSize: 10, color: "var(--text-muted)" }} />{categoryTrendNames.map((category, index) => <Line key={category} type="monotone" dataKey={category} stroke={chartColors[index % chartColors.length]} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 4 }} />)}</LineChart></ResponsiveContainer></div>
           : <EmptyState title="A pattern takes time." message="Add some expenses and your category trends will take shape." />}
       </section>
       <section className="panel report-panel wide-report"><SectionTitle title="Savings, over time" detail="Every little contribution, adding up month by month." />
-        {data.goals.length ? <div className="report-chart report-chart-short"><ResponsiveContainer width="100%" height="100%"><AreaChart data={savingsTrend} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}><defs><linearGradient id="savingsFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a1b29d" stopOpacity={.3} /><stop offset="95%" stopColor="#a1b29d" stopOpacity={0} /></linearGradient></defs><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="3 5" /><XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 11 }} dy={10} /><YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 10 }} tickFormatter={(value: number) => `$${value / 1000}k`} /><Tooltip content={<ChartTooltip />} /><Area type="monotone" dataKey="saved" name="Savings" stroke="#91a88f" strokeWidth={2} fill="url(#savingsFill)" /></AreaChart></ResponsiveContainer></div>
+        {data.goals.length ? <div className="report-chart report-chart-short"><ResponsiveContainer width="100%" height="100%"><AreaChart data={savingsTrend} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}><defs><linearGradient id="savingsFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a1b29d" stopOpacity={.3} /><stop offset="95%" stopColor="#a1b29d" stopOpacity={0} /></linearGradient></defs><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="3 5" /><XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 11 }} dy={10} /><YAxis axisLine={false} tickLine={false} tick={{ fill: "var(--text-soft)", fontSize: 10 }} tickFormatter={(value: number) => formatCompact(value)} /><Tooltip content={<ChartTooltip />} /><Area type="monotone" dataKey="saved" name="Savings" stroke="#91a88f" strokeWidth={2} fill="url(#savingsFill)" /></AreaChart></ResponsiveContainer></div>
           : <EmptyState title="Your goals are waiting." message="Start a savings goal to see your progress here." />}
       </section>
     </div>
@@ -724,10 +768,11 @@ function ReportsPage({ data, selectedMonth }: { data: LedgerData; selectedMonth:
 function InvoicesPage({ data, onAdd, onEdit, onMarkPaid, onDelete }: {
   data: LedgerData; onAdd: () => void; onEdit: (id: string) => void; onMarkPaid: (invoice: Invoice) => void; onDelete: (invoice: Invoice) => void;
 }) {
+  const { format } = useMoney();
   const pending = data.invoices.filter((invoice) => invoice.status !== "Paid").reduce((total, invoice) => total + invoice.amount, 0);
   const paid = data.invoices.filter((invoice) => invoice.status === "Paid").reduce((total, invoice) => total + invoice.amount, 0);
   return <div className="content-stack">
-    <div className="inline-metrics"><div className="inline-metric"><span>On its way</span><strong className="gold-text">{currency(pending)}</strong></div><div className="inline-metric"><span>Already paid</span><strong className="positive">{currency(paid)}</strong></div><div className="inline-metric"><span>Invoices</span><strong>{data.invoices.length}</strong></div></div>
+    <div className="inline-metrics"><div className="inline-metric"><span>On its way</span><strong className="gold-text">{format(pending)}</strong></div><div className="inline-metric"><span>Already paid</span><strong className="positive">{format(paid)}</strong></div><div className="inline-metric"><span>Invoices</span><strong>{data.invoices.length}</strong></div></div>
     <section className="panel data-panel">
       <SectionTitle title="Your invoices" detail="A clear, kind nudge toward getting paid." action={<button className="button button-gold" onClick={onAdd}><Plus size={16} /> Create invoice</button>} />
       {data.invoices.length ? <div className="invoice-list">
@@ -735,7 +780,7 @@ function InvoicesPage({ data, onAdd, onEdit, onMarkPaid, onDelete }: {
           <div className="invoice-icon"><FileText size={18} /></div>
           <div className="invoice-client"><strong>{invoice.client}</strong><span>{invoice.description}</span></div>
           <span className={`invoice-status ${invoice.status.toLowerCase()}`}><i />{invoice.status}</span>
-          <span className="invoice-date">{shortDate(invoice.date)}</span><strong className="invoice-amount">{currency(invoice.amount)}</strong>
+          <span className="invoice-date">{shortDate(invoice.date)}</span><strong className="invoice-amount">{format(invoice.amount)}</strong>
           <div className="invoice-actions">{invoice.status !== "Paid" && <button className="button button-small button-soft" onClick={() => onMarkPaid(invoice)}><Check size={14} /> Mark paid</button>}<button className="row-icon-button" onClick={() => onEdit(invoice.id)} aria-label={`Edit invoice for ${invoice.client}`}><MoreHorizontal size={17} /></button><button className="row-icon-button delete-row-button" onClick={() => onDelete(invoice)} aria-label={`Delete invoice for ${invoice.client}`}><Trash2 size={15} /></button></div>
         </article>)}
       </div> : <EmptyState title="A good day’s work deserves a good invoice." message="Create a simple invoice and keep track of the work you’ve sent out." action={<button className="button button-gold" onClick={onAdd}><Plus size={15} /> Create your first invoice</button>} />}
@@ -744,26 +789,55 @@ function InvoicesPage({ data, onAdd, onEdit, onMarkPaid, onDelete }: {
   </div>;
 }
 
-function SettingsPage({ data, user, onExport, onImport, onReset, onTheme, onSignOut }: {
-  data: LedgerData; user: User; onExport: () => void; onImport: () => void; onReset: () => void; onTheme: () => void;
+function SettingsPage({ data, user, avatarUrl, avatarError, ratesLoading, ratesError, ratesUpdatedAt, onCurrencyChange, onRefreshRates, onExport, onImport, onReset, onTheme, onSignOut }: {
+  data: LedgerData; user: User; avatarUrl: string | null; avatarError: boolean;
+  ratesLoading: boolean; ratesError: string | null; ratesUpdatedAt?: string;
+  onCurrencyChange: (currency: CurrencyCode) => void; onRefreshRates: () => void;
+  onExport: () => void; onImport: () => void; onReset: () => void; onTheme: () => void;
   onSignOut: () => Promise<void>;
 }) {
+  const { currency: displayCurrency } = useMoney();
+  const rateUpdatedLabel = ratesUpdatedAt
+    ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(ratesUpdatedAt))
+    : "";
   return <div className="settings-layout">
-    <ProfileSettings user={user} onSignOut={onSignOut} />
+    <ProfileSettings user={user} avatarUrl={avatarUrl} avatarError={avatarError} onSignOut={onSignOut} />
+    <section className="panel settings-panel"><SectionTitle title="Your currency" detail="Display your ledger in the currency you use every day." />
+      <div className="currency-setting-row">
+        <label className="form-field" htmlFor="account-currency"><span>Display currency</span>
+          <select id="account-currency" value={data.currency} onChange={(event) => onCurrencyChange(event.target.value as CurrencyCode)} disabled={ratesLoading}>
+            {CURRENCY_OPTIONS.map(({ code, name }) => <option key={code} value={code}>{code} — {name}</option>)}
+          </select>
+        </label>
+        <div className="currency-rate-status" role={ratesError ? "alert" : "status"}>
+          {ratesError || (ratesLoading
+            ? `Getting the latest rates. Values are currently shown in ${displayCurrency}.`
+            : rateUpdatedLabel
+              ? `Rates last updated ${rateUpdatedLabel}. Values are shown in ${displayCurrency}.`
+              : `Values are shown in ${displayCurrency}.`)}
+          <small>Rates from <a href="https://www.exchangerate-api.com" target="_blank" rel="noreferrer">ExchangeRate-API</a>; refreshed every 12 hours.</small>
+        </div>
+        <button className="button button-outline button-small" onClick={onRefreshRates} disabled={ratesLoading}>
+          {ratesLoading ? "Updating rates…" : "Refresh rates"}
+        </button>
+      </div>
+    </section>
     <section className="panel settings-panel"><SectionTitle title="The way it looks" detail="A workspace that feels like yours." />
       <div className="setting-row"><div className="setting-icon"><Sun size={18} /></div><div className="setting-copy"><strong>Appearance</strong><span>Choose a little more light or a little more shade.</span></div><button className={`theme-switch ${data.theme === "light" ? "switch-light" : ""}`} onClick={onTheme} role="switch" aria-checked={data.theme === "light"} aria-label="Toggle light mode"><span>{data.theme === "dark" ? <Moon size={13} /> : <Sun size={13} />}</span></button><span className="theme-state">{data.theme === "dark" ? "Dark" : "Light"}</span></div>
     </section>
     <section className="panel settings-panel"><SectionTitle title="Your data, always yours." detail="Your ledger syncs securely to your Supabase account. Export a backup whenever you’d like a copy." />
       <div className="setting-row"><div className="setting-icon"><Download size={18} /></div><div className="setting-copy"><strong>Export a backup</strong><span>Download a copy of your transactions, goals and invoices.</span></div><button className="button button-outline button-small" onClick={onExport}><Download size={14} /> Export JSON</button></div>
       <div className="setting-row"><div className="setting-icon"><ArrowDownLeft size={18} /></div><div className="setting-copy"><strong>Restore a backup</strong><span>Replace your account’s ledger with a Tiny Ledger JSON backup.</span></div><button className="button button-outline button-small" onClick={onImport}>Choose file</button></div>
-      <div className="setting-row danger-setting"><div className="setting-icon"><Trash2 size={18} /></div><div className="setting-copy"><strong>Reset all data</strong><span>Replace your account’s current ledger with the sample workspace.</span></div><button className="button button-danger-outline button-small" onClick={onReset}>Reset data</button></div>
+      <div className="setting-row danger-setting"><div className="setting-icon"><Trash2 size={18} /></div><div className="setting-copy"><strong>Reset all data</strong><span>Replace your account’s current ledger with an empty ledger.</span></div><button className="button button-danger-outline button-small" onClick={onReset}>Reset data</button></div>
     </section>
     <div className="privacy-note"><span className="privacy-lock"><Settings size={16} /></span><div><strong>Private by design</strong><p>Your ledger is stored in a private account record protected by Supabase Row Level Security. Every request is scoped to your signed-in account; your financial data is never read from shared browser storage.</p></div></div>
     <div className="settings-version">TINY LEDGER <span>·</span> VERSION 1.0 <span>·</span> MADE FOR THE ONES BEHIND THE LENS</div>
   </div>;
 }
 
-function ProfileSettings({ user, onSignOut }: { user: User; onSignOut: () => Promise<void> }) {
+function ProfileSettings({ user, avatarUrl, avatarError, onSignOut }: {
+  user: User; avatarUrl: string | null; avatarError: boolean; onSignOut: () => Promise<void>;
+}) {
   const [name, setName] = useState(String(user.user_metadata.full_name ?? ""));
   const [email, setEmail] = useState(user.email ?? "");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -771,6 +845,7 @@ function ProfileSettings({ user, onSignOut }: { user: User; onSignOut: () => Pro
   const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -778,7 +853,12 @@ function ProfileSettings({ user, onSignOut }: { user: User; onSignOut: () => Pro
     setBusy(true);
     setNotice(null);
     try {
-      const updates: { data: { full_name: string }; email?: string } = { data: { full_name: name.trim() } };
+      const updates: { data: Record<string, unknown>; email?: string } = {
+        data: {
+          full_name: name.trim(),
+          ...(typeof user.user_metadata.avatar_path === "string" ? { avatar_path: user.user_metadata.avatar_path } : {}),
+        },
+      };
       if (email.trim().toLowerCase() !== (user.email ?? "").toLowerCase()) updates.email = email.trim();
       const { error } = await supabase.auth.updateUser(updates);
       if (error) throw error;
@@ -787,6 +867,59 @@ function ProfileSettings({ user, onSignOut }: { user: User; onSignOut: () => Pro
       console.error("Unable to update the account profile.", error);
       setNotice({ kind: "error", text: error instanceof Error ? error.message : "Your profile couldn’t be updated. Please try again." });
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateAvatar(file?: File) {
+    if (!file || !supabase || busy) return;
+    const extensionByType: Record<string, string> = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+    };
+    const extension = extensionByType[file.type];
+    if (!extension || file.size > 5 * 1024 * 1024) {
+      setNotice({ kind: "error", text: "Choose a JPG, PNG or WebP image smaller than 5 MB." });
+      if (avatarInputRef.current) avatarInputRef.current.value = "";
+      return;
+    }
+
+    setBusy(true);
+    setNotice(null);
+    const path = `${user.id}/${crypto.randomUUID()}.${extension}`;
+    const oldPath = typeof user.user_metadata.avatar_path === "string" ? user.user_metadata.avatar_path : "";
+    try {
+      const { error: uploadError } = await supabase.storage.from("avatars").upload(path, file, {
+        cacheControl: "0",
+        contentType: file.type,
+        upsert: false,
+      });
+      if (uploadError) throw uploadError;
+
+      const { error: profileError } = await supabase.auth.updateUser({
+        data: { ...user.user_metadata, avatar_path: path },
+      });
+      if (profileError) {
+        const { error: cleanupError } = await supabase.storage.from("avatars").remove([path]);
+        if (cleanupError) console.error("Unable to remove a profile photo after profile update failed.", cleanupError);
+        throw profileError;
+      }
+
+      if (oldPath && oldPath !== path && oldPath.startsWith(`${user.id}/`)) {
+        const { error: removeError } = await supabase.storage.from("avatars").remove([oldPath]);
+        if (removeError) {
+          console.error("The previous profile photo could not be removed.", removeError);
+          setNotice({ kind: "error", text: "Your new photo is saved, but the previous photo could not be removed." });
+          return;
+        }
+      }
+      setNotice({ kind: "success", text: "Your profile photo has been updated." });
+    } catch (error) {
+      console.error("Unable to update the profile photo.", error);
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : "Your profile photo couldn’t be updated. Please try again." });
+    } finally {
+      if (avatarInputRef.current) avatarInputRef.current.value = "";
       setBusy(false);
     }
   }
@@ -834,6 +967,14 @@ function ProfileSettings({ user, onSignOut }: { user: User; onSignOut: () => Pro
 
   return <section className="panel settings-panel profile-panel">
     <SectionTitle title="Your account" detail="The person behind the lens." />
+    <div className="profile-photo-row">
+      <div className="profile-photo-preview">{avatarUrl ? <img src={avatarUrl} alt="Your profile" /> : displayName(user).charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase() || "A"}</div>
+      <div className="profile-photo-copy"><strong>Profile photo</strong><span>Private to your account. JPG, PNG or WebP, up to 5 MB.</span>
+        {avatarError && <span role="alert">Your saved profile photo couldn’t be loaded.</span>}
+        <input ref={avatarInputRef} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void updateAvatar(event.target.files?.[0])} />
+        <button className="button button-outline button-small" type="button" onClick={() => avatarInputRef.current?.click()} disabled={busy}><Camera size={14} />{busy ? "Saving photo…" : avatarUrl ? "Change photo" : "Add photo"}</button>
+      </div>
+    </div>
     <form className="profile-form" onSubmit={(event) => void saveProfile(event)}>
       <label className="form-field"><span>Full name</span><input autoComplete="name" minLength={2} maxLength={100} value={name} onChange={(event) => setName(event.target.value)} required /></label>
       <label className="form-field"><span>Email address <small>A confirmation email is sent when you change it.</small></span><input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
@@ -857,6 +998,8 @@ function Modal({ modal, data, onClose, onSaveTransaction, onSaveGoal, onSaveBudg
   onSaveBudget: (budget: Budget) => void; onSaveInvoice: (invoice: Invoice) => void;
   onAllocate: (goalId: string, amount: number) => void;
 }) {
+  const money = useMoney();
+  const { currency: displayCurrency, format, toBase, toDisplay } = money;
   const modalRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -868,12 +1011,12 @@ function Modal({ modal, data, onClose, onSaveTransaction, onSaveGoal, onSaveBudg
   const [type, setType] = useState<TransactionType>(transaction?.type ?? (modal.kind === "transaction" ? modal.type ?? "expense" : "expense"));
   const [category, setCategory] = useState(transaction?.category ?? "");
   const [customCategory, setCustomCategory] = useState(transaction && !((transaction.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).includes(transaction.category)) ? transaction.category : "");
-  const [amount, setAmount] = useState(transaction ? String(transaction.amount) : budget ? String(budget.limit) : invoice ? String(invoice.amount) : "");
+  const [amount, setAmount] = useState(transaction ? toDisplay(transaction.amount).toFixed(2) : budget ? toDisplay(budget.limit).toFixed(2) : invoice ? toDisplay(invoice.amount).toFixed(2) : "");
   const [date, setDate] = useState(transaction?.date ?? todayString());
   const [notes, setNotes] = useState(transaction?.notes ?? "");
   const [tags, setTags] = useState(transaction?.tags.join(", ") ?? "");
   const [name, setName] = useState(goal?.name ?? "");
-  const [targetAmount, setTargetAmount] = useState(goal ? String(goal.targetAmount) : "");
+  const [targetAmount, setTargetAmount] = useState(goal ? toDisplay(goal.targetAmount).toFixed(2) : "");
   const [targetDate, setTargetDate] = useState(goal?.targetDate ?? "");
   const [budgetCategory, setBudgetCategory] = useState(budget?.category ?? "");
   const [budgetCustom, setBudgetCustom] = useState("");
@@ -883,6 +1026,18 @@ function Modal({ modal, data, onClose, onSaveTransaction, onSaveGoal, onSaveBudg
   const [customBudgetMode, setCustomBudgetMode] = useState(false);
   const [customCategoryMode, setCustomCategoryMode] = useState(Boolean(transaction && !((transaction.type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).includes(transaction.category))));
   const [allocation, setAllocation] = useState("");
+  const previousMoney = useRef(money);
+
+  useEffect(() => {
+    const previous = previousMoney.current;
+    if (previous.currency !== money.currency || previous.rateVersion !== money.rateVersion) {
+      const convertInput = (value: string) => value ? money.toDisplay(previous.toBase(Number(value))).toFixed(2) : value;
+      setAmount(convertInput);
+      setTargetAmount(convertInput);
+      setAllocation(convertInput);
+    }
+    previousMoney.current = money;
+  }, [money]);
 
   useEffect(() => {
     modalRef.current?.querySelector<HTMLElement>("form input, form select")?.focus();
@@ -904,7 +1059,9 @@ function Modal({ modal, data, onClose, onSaveTransaction, onSaveGoal, onSaveBudg
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const numericAmount = Number(amount);
+    const numericAmount = toBase(Number(amount));
+    const numericTarget = toBase(Number(targetAmount));
+    const numericAllocation = toBase(Number(allocation));
     if (modal.kind === "transaction" && numericAmount > 0) {
       const selectedCategory = customCategoryMode ? customCategory.trim() : category;
       if (!selectedCategory) return;
@@ -912,8 +1069,8 @@ function Modal({ modal, data, onClose, onSaveTransaction, onSaveGoal, onSaveBudg
         id: transaction?.id ?? makeId("tx"), type, category: selectedCategory, amount: numericAmount, date,
         notes: notes.trim(), tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
       });
-    } else if (modal.kind === "goal" && Number(targetAmount) > 0) {
-      onSaveGoal({ id: goal?.id ?? makeId("goal"), name: name.trim(), targetAmount: Number(targetAmount), currentAmount: goal?.currentAmount ?? 0, targetDate });
+    } else if (modal.kind === "goal" && numericTarget > 0) {
+      onSaveGoal({ id: goal?.id ?? makeId("goal"), name: name.trim(), targetAmount: numericTarget, currentAmount: goal?.currentAmount ?? 0, targetDate });
     } else if (modal.kind === "budget" && numericAmount > 0) {
       const selectedCategory = customBudgetMode ? budgetCustom.trim() : budgetCategory;
       if (!selectedCategory) return;
@@ -924,8 +1081,8 @@ function Modal({ modal, data, onClose, onSaveTransaction, onSaveGoal, onSaveBudg
         status: invoice?.status === "Paid" ? "Paid" : invoiceStatus as Invoice["status"],
         paidTransactionId: invoice?.paidTransactionId,
       });
-    } else if (modal.kind === "allocate" && Number(allocation) > 0 && goalToFund) {
-      onAllocate(goalToFund.id, Number(allocation));
+    } else if (modal.kind === "allocate" && numericAllocation > 0 && goalToFund) {
+      onAllocate(goalToFund.id, numericAllocation);
     }
   }
 
@@ -939,34 +1096,34 @@ function Modal({ modal, data, onClose, onSaveTransaction, onSaveGoal, onSaveBudg
           {!transaction && <div className="segmented-control"><button type="button" className={type === "expense" ? "selected" : ""} onClick={() => { setType("expense"); setCategory(""); setCustomCategoryMode(false); }}>Expense</button><button type="button" className={type === "income" ? "selected" : ""} onClick={() => { setType("income"); setCategory(""); setCustomCategoryMode(false); }}>Income</button></div>}
           <label className="form-field"><span>Category</span><select value={customCategoryMode ? "__custom" : category} onChange={(event) => { if (event.target.value === "__custom") { setCustomCategoryMode(true); setCategory(""); } else { setCustomCategoryMode(false); setCategory(event.target.value); } }} required={!customCategoryMode}><option value="">Choose a category</option>{categoryChoices.map((item) => <option key={item}>{item}</option>)}{transaction && !categoryChoices.includes(transaction.category) && <option>{transaction.category}</option>}<option value="__custom">+ Custom category</option></select></label>
           {customCategoryMode && <label className="form-field"><span>Your category</span><input value={customCategory} onChange={(event) => setCustomCategory(event.target.value)} placeholder="e.g. Albums" required autoFocus /></label>}
-          <label className="form-field"><span>Amount</span><div className="input-prefix"><span>$</span><input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" required /></div></label>
+          <label className="form-field"><span>Amount</span><div className="input-prefix"><span>{currencyPrefix(displayCurrency)}</span><input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" required /></div></label>
           <label className="form-field"><span>Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} required /></label>
           <label className="form-field"><span>Notes <small>OPTIONAL</small></span><input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What was this for?" /></label>
           <label className="form-field"><span>Tags <small>SEPARATE WITH COMMAS</small></span><input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="wedding, travel" /></label>
         </>}
         {modal.kind === "goal" && <>
           <label className="form-field"><span>Give your goal a name</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. A new camera" required /></label>
-          <label className="form-field"><span>Target amount</span><div className="input-prefix"><span>$</span><input type="number" min="1" step="1" value={targetAmount} onChange={(event) => setTargetAmount(event.target.value)} placeholder="0" required /></div></label>
+          <label className="form-field"><span>Target amount</span><div className="input-prefix"><span>{currencyPrefix(displayCurrency)}</span><input type="number" min="1" step="1" value={targetAmount} onChange={(event) => setTargetAmount(event.target.value)} placeholder="0" required /></div></label>
           <label className="form-field"><span>When would you like to get there?</span><input type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} required /></label>
-          {goal && <p className="form-hint">Your current progress of {currency(goal.currentAmount)} will stay right where it is.</p>}
+          {goal && <p className="form-hint">Your current progress of {format(goal.currentAmount)} will stay right where it is.</p>}
         </>}
         {modal.kind === "budget" && <>
           <label className="form-field"><span>Category</span><select value={customBudgetMode ? "__custom" : budgetCategory} onChange={(event) => { if (event.target.value === "__custom") { setCustomBudgetMode(true); setBudgetCategory(""); } else { setCustomBudgetMode(false); setBudgetCategory(event.target.value); } }} required={!customBudgetMode}><option value="">Choose a category</option>{[...new Set([...EXPENSE_CATEGORIES, ...existingCategories])].map((item) => <option key={item}>{item}</option>)}<option value="__custom">+ Custom category</option></select></label>
           {customBudgetMode && <label className="form-field"><span>Your category</span><input value={budgetCustom} onChange={(event) => setBudgetCustom(event.target.value)} placeholder="e.g. Albums" required /></label>}
-          <label className="form-field"><span>Monthly limit</span><div className="input-prefix"><span>$</span><input type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0" required /></div></label>
+          <label className="form-field"><span>Monthly limit</span><div className="input-prefix"><span>{currencyPrefix(displayCurrency)}</span><input type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0" required /></div></label>
           <p className="form-hint">This gentle guardrail resets at the beginning of each month.</p>
         </>}
         {modal.kind === "invoice" && <>
           <label className="form-field"><span>Client name</span><input value={client} onChange={(event) => setClient(event.target.value)} placeholder="Who’s the invoice for?" required /></label>
           <label className="form-field"><span>Description</span><input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What did you create for them?" required /></label>
-          <label className="form-field"><span>Amount</span><div className="input-prefix"><span>$</span><input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" required /></div></label>
+          <label className="form-field"><span>Amount</span><div className="input-prefix"><span>{currencyPrefix(displayCurrency)}</span><input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" required /></div></label>
           <label className="form-field"><span>Invoice date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} required /></label>
           <label className="form-field"><span>Status</span><select value={invoiceStatus} onChange={(event) => setInvoiceStatus(event.target.value as Invoice["status"])} disabled={invoice?.status === "Paid"}><option>Draft</option><option>Sent</option>{invoice?.status === "Paid" && <option>Paid</option>}</select></label>
           {invoice?.status === "Paid" && <p className="form-hint">This invoice is paid. Its income transaction is already recorded.</p>}
         </>}
         {modal.kind === "allocate" && goalToFund && <>
           <div className="allocation-intro"><span className="goal-art goal-art-1"><Target size={19} /></span><div><span>ADDING TO</span><strong>{goalToFund.name}</strong></div></div>
-          <label className="form-field"><span>Amount to set aside</span><div className="input-prefix"><span>$</span><input type="number" min="0.01" step="0.01" value={allocation} onChange={(event) => setAllocation(event.target.value)} placeholder="0.00" autoFocus required /></div></label>
+          <label className="form-field"><span>Amount to set aside</span><div className="input-prefix"><span>{currencyPrefix(displayCurrency)}</span><input type="number" min="0.01" step="0.01" value={allocation} onChange={(event) => setAllocation(event.target.value)} placeholder="0.00" autoFocus required /></div></label>
           <p className="form-hint">This will update your savings progress for {goalToFund.name}.</p>
         </>}
         <div className="modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancel</button><button type="submit" className="button button-gold">{modal.kind === "allocate" ? "Set aside" : transaction || goal || budget || invoice ? "Save changes" : "Save to Tiny Ledger"} <ChevronRight size={15} /></button></div>

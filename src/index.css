@@ -84,6 +84,7 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .profile-row { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); padding: 17px 5px 0; margin-top: 16px; }
 .avatar, .top-avatar { display: grid; place-items: center; color: #1a1b17; background: linear-gradient(145deg, #ddc69b, #9b8866); font: 700 13px "Manrope", sans-serif; border-radius: 50%; }
 .avatar { width: 33px; height: 33px; }
+.avatar img, .top-avatar img, .profile-photo-preview img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
 .profile-row > div:nth-child(2) { display: grid; gap: 3px; flex: 1; min-width: 0; }
 .profile-row strong { color: var(--text); font-size: 11px; font-weight: 600; }
 .profile-row span { color: var(--text-soft); font-size: 9px; }
@@ -388,6 +389,11 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .settings-layout { display: grid; gap: 14px; max-width: 820px; }
 .settings-panel { padding: 19px; }
 .settings-panel > .section-title { padding-bottom: 13px; }
+.currency-setting-row { display: flex; align-items: end; gap: 13px; border-top: 1px solid var(--line); padding-top: 14px; }
+.currency-setting-row .form-field { flex: 1; max-width: 360px; }
+.currency-rate-status { flex: 1; color: var(--text-soft); font-size: 9px; line-height: 1.5; }
+.currency-rate-status small { display: block; margin-top: 5px; font-size: 8px; }
+.currency-rate-status a { color: var(--gold); }
 .setting-row { display: flex; align-items: center; gap: 12px; min-height: 69px; border-top: 1px solid var(--line); }
 .setting-icon { width: 32px; height: 32px; flex-shrink: 0; display: grid; place-items: center; border-radius: 9px; color: var(--gold); background: var(--gold-soft); }
 .setting-copy { flex: 1; min-width: 0; display: grid; gap: 4px; }
@@ -438,6 +444,10 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .toast svg { color: var(--green); }
 .toast.toast-error { border-color: rgba(203,128,112,.35); }
 .toast.toast-error svg { color: var(--red); }
+.welcome-back-toast { position: fixed; z-index: 65; top: 72px; left: 50%; translate: -50% 0; display: flex; align-items: center; gap: 9px; max-width: calc(100vw - 24px); padding: 11px 16px; border: 1px solid rgba(217,184,121,.32); border-radius: 9px; color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow); font: 500 11px "Manrope", sans-serif; white-space: nowrap; }
+.welcome-back-toast svg { color: var(--gold); }
+.welcome-back-toast strong { color: var(--gold); }
+.welcome-back-toast > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 @media (min-width: 1500px) {
   .page-content { padding-right: 54px; padding-left: 54px; }
@@ -678,6 +688,11 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .profile-form { display: grid; gap: 12px; padding: 5px 0 15px; }
 .profile-form .form-field input { font-size: 10px; }
 .profile-save { justify-self: end; }
+.profile-photo-row { display: flex; align-items: center; gap: 13px; padding: 5px 0 16px; }
+.profile-photo-preview { width: 58px; height: 58px; flex: 0 0 58px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 50%; color: #1a1b17; background: linear-gradient(145deg, #ddc69b, #9b8866); font: 700 20px "Manrope", sans-serif; }
+.profile-photo-copy { display: grid; justify-items: start; gap: 6px; }
+.profile-photo-copy strong { color: var(--text); font-size: 10px; }
+.profile-photo-copy > span { color: var(--text-soft); font-size: 8px; line-height: 1.45; }
 .profile-subsection { padding-top: 14px; border-top: 1px solid var(--line); }
 .profile-subsection > h3 { margin: 0; color: var(--text); font: 600 12px "Manrope", sans-serif; }
 .profile-subsection > p { margin: 5px 0 9px; color: var(--text-soft); font-size: 9px; }
@@ -704,4 +719,7 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   .auth-subheading { margin-bottom: 16px; }
   .auth-footer { font-size: 7px; }
   .profile-password-pair { grid-template-columns: 1fr; gap: 12px; }
+  .currency-setting-row { align-items: stretch; flex-direction: column; }
+  .currency-setting-row .form-field { max-width: none; }
+  .currency-setting-row > .button { align-self: flex-start; }
 }
