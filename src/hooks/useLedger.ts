@@ -27,12 +27,16 @@ export function useLedger(userId: string): {
   latestData.current = data;
 
   const retry = useCallback(() => {
+    if (loadedRef.current && loadedUserId === userId && !loading && !error) {
+      setSaveRevision((value) => value + 1);
+      return;
+    }
+
     loadedRef.current = false;
     setError(null);
     setLoading(true);
-    if (loadedUserId === userId && !loading) setSaveRevision((value) => value + 1);
-    else setLoadRevision((value) => value + 1);
-  }, [loadedUserId, loading, userId]);
+    setLoadRevision((value) => value + 1);
+  }, [error, loadedUserId, loading, userId]);
 
   useEffect(() => {
     if (!supabase) {

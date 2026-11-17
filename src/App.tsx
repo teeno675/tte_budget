@@ -270,7 +270,7 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
     try {
       const parsed: unknown = JSON.parse(await file.text());
       if (!isLedgerData(parsed)) throw new Error("This file doesn’t look like a Tiny Ledger backup.");
-      if (!window.confirm("Import this backup? It will replace the data currently saved on this device.")) return;
+      if (!window.confirm("Import this backup? It will replace the ledger currently saved to your account.")) return;
       setData(parsed);
       notify("Backup imported successfully.");
     } catch (error) {
@@ -281,7 +281,7 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
   }
 
   function resetData() {
-    if (!window.confirm("Reset all Tiny Ledger data on this device? This can’t be undone. Export a backup first if you’d like to keep a copy.")) return;
+    if (!window.confirm("Reset your Tiny Ledger account to the sample data? This replaces the ledger saved to your account and can’t be undone. Export a backup first if you’d like to keep a copy.")) return;
     setData(createDefaultData());
     notify("Sample data restored.");
   }
@@ -309,7 +309,7 @@ function AuthenticatedApp({ user, onSignOut }: { user: User; onSignOut: () => Pr
       <aside className={`sidebar ${mobileMenuOpen ? "sidebar-open" : ""}`}>
         <button className="brand" onClick={() => navigate("dashboard")} aria-label="Tiny Ledger home">
           <span className="brand-mark"><Aperture size={20} strokeWidth={1.7} /></span>
-          <span className="brand-name">lens<span>ledger</span></span>
+          <span className="brand-name">tiny<span>ledger</span></span>
         </button>
         <div className="workspace-label">YOUR STUDIO</div>
         <nav className="side-nav" aria-label="Main navigation">
@@ -747,10 +747,10 @@ function SettingsPage({ data, user, onExport, onImport, onReset, onTheme, onSign
     <section className="panel settings-panel"><SectionTitle title="The way it looks" detail="A workspace that feels like yours." />
       <div className="setting-row"><div className="setting-icon"><Sun size={18} /></div><div className="setting-copy"><strong>Appearance</strong><span>Choose a little more light or a little more shade.</span></div><button className={`theme-switch ${data.theme === "light" ? "switch-light" : ""}`} onClick={onTheme} role="switch" aria-checked={data.theme === "light"} aria-label="Toggle light mode"><span>{data.theme === "dark" ? <Moon size={13} /> : <Sun size={13} />}</span></button><span className="theme-state">{data.theme === "dark" ? "Dark" : "Light"}</span></div>
     </section>
-    <section className="panel settings-panel"><SectionTitle title="Your data, always yours." detail="Everything stays on this device unless you choose to take it with you." />
+    <section className="panel settings-panel"><SectionTitle title="Your data, always yours." detail="Your ledger syncs securely to your Supabase account. Export a backup whenever you’d like a copy." />
       <div className="setting-row"><div className="setting-icon"><Download size={18} /></div><div className="setting-copy"><strong>Export a backup</strong><span>Download a copy of your transactions, goals and invoices.</span></div><button className="button button-outline button-small" onClick={onExport}><Download size={14} /> Export JSON</button></div>
-      <div className="setting-row"><div className="setting-icon"><ArrowDownLeft size={18} /></div><div className="setting-copy"><strong>Restore a backup</strong><span>Bring your Tiny Ledger JSON backup back to this device.</span></div><button className="button button-outline button-small" onClick={onImport}>Choose file</button></div>
-      <div className="setting-row danger-setting"><div className="setting-icon"><Trash2 size={18} /></div><div className="setting-copy"><strong>Reset all data</strong><span>Restore the sample workspace and clear your saved changes.</span></div><button className="button button-danger-outline button-small" onClick={onReset}>Reset data</button></div>
+      <div className="setting-row"><div className="setting-icon"><ArrowDownLeft size={18} /></div><div className="setting-copy"><strong>Restore a backup</strong><span>Replace your account’s ledger with a Tiny Ledger JSON backup.</span></div><button className="button button-outline button-small" onClick={onImport}>Choose file</button></div>
+      <div className="setting-row danger-setting"><div className="setting-icon"><Trash2 size={18} /></div><div className="setting-copy"><strong>Reset all data</strong><span>Replace your account’s current ledger with the sample workspace.</span></div><button className="button button-danger-outline button-small" onClick={onReset}>Reset data</button></div>
     </section>
     <div className="privacy-note"><span className="privacy-lock"><Settings size={16} /></span><div><strong>Private by design</strong><p>Your ledger is stored in a private account record protected by Supabase Row Level Security. Every request is scoped to your signed-in account; your financial data is never read from shared browser storage.</p></div></div>
     <div className="settings-version">TINY LEDGER <span>·</span> VERSION 1.0 <span>·</span> MADE FOR THE ONES BEHIND THE LENS</div>
